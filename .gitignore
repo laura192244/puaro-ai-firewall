@@ -1,0 +1,11 @@
+.venv/
+.venv-linux/
+puaro-ai-firewall/
+__pycache__/
+*.pyc
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+scratch_aisecurity/
+.pytest_cache/

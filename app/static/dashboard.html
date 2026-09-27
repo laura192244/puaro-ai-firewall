@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Puaro Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171d2e; --border: #2a3350; --text: #e6e9f2; --muted: #8b93a8;
+    --pass: #3fb950; --slow: #d4a72c; --hide: #db6d28; --decoy: #f85149; --blocked: #6e40c9; --immune: #d6409f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  .banner { background: #2a2410; border: 1px solid #6e5a1e; color: #e3c565; padding: 8px 16px; font-size: 13px; }
+  .counters { display: flex; gap: 16px; padding: 16px 24px; flex-wrap: wrap; }
+  .counter { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 140px; }
+  .counter .num { font-size: 24px; font-weight: 700; }
+  .counter .label { font-size: 12px; color: var(--muted); }
+  .buttons { display: flex; gap: 10px; padding: 0 24px 16px; flex-wrap: wrap; }
+  button { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { border-color: #4a5580; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  main { padding: 0 24px 24px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #0f1420; }
+  .badge.answered { background: var(--pass); }
+  .badge.slowed { background: var(--slow); }
+  .badge.reasoning_hidden { background: var(--hide); }
+  .badge.decoy { background: var(--decoy); color: white; }
+  .badge.firewall_blocked { background: var(--blocked); color: white; }
+  .badge.immunity_blocked { background: var(--immune); color: white; }
+  .bars { display: flex; gap: 2px; width: 120px; }
+  .bar { height: 10px; background: var(--border); flex: 1; border-radius: 2px; position: relative; overflow: hidden; }
+  .bar > span { position: absolute; bottom: 0; left: 0; right: 0; background: #58a6ff; }
+  .risk { font-weight: 700; }
+  #log { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 0 24px 16px; font-size: 12px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; display: none; }
+  .scan-result { margin: 0 24px 16px; font-size: 13px; }
+  .scan-result span { font-family: monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Puaro — protective proxy dashboard</h1>
+  <div id="mode-line" style="font-size:12px;color:var(--muted);"></div>
+</header>
+<div id="banner"></div>
+
+<div class="counters">
+  <div class="counter"><div class="num" id="c-requests">0</div><div class="label">requests</div></div>
+  <div class="counter"><div class="num" id="c-served">0</div><div class="label">real clients served</div></div>
+  <div class="counter"><div class="num" id="c-stopped">0</div><div class="label">attackers stopped</div></div>
+  <div class="counter"><div class="num" id="c-traps">—</div><div class="label">trap matches (last scan)</div></div>
+</div>
+
+<div class="buttons">
+  <button onclick="doAction('send-client')">Send client</button>
+  <button onclick="doAction('send-bot')">Send bot</button>
+  <button onclick="doAction('send-hacker')">Send hacker</button>
+  <button onclick="doAction('auto-play')">Auto-play</button>
+  <button onclick="doAction('scan-suspect-model')">Scan suspect model</button>
+  <button onclick="doAction('attack-customer-b')">Attack Customer B</button>
+  <button onclick="doAction('reset')">Reset</button>
+</div>
+
+<div id="scan-result" class="scan-result"></div>
+<pre id="log"></pre>
+
+<main>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Tenant</th><th>Account</th><th>Risk</th><th>Signals</th><th>Outcome</th><th>Firewall</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+
+<script>
+const SIGNAL_ORDER = ["rate", "templates", "reasoning", "linked", "coverage"];
+
+async function fetchState() {
+  const resp = await fetch("/api/dashboard/state");
+  const state = await resp.json();
+  render(state);
+}
+
+function render(state) {
+  document.getElementById("mode-line").textContent =
+    `firewall: ${state.firewall_mode} · model: ${state.model_backend}`;
+
+  const banner = document.getElementById("banner");
+  let warnings = [];
+  if (state.firewall_mode.startsWith("fallback")) warnings.push("FALLBACK FIREWALL active (native sentinel-core not loaded)");
+  if (state.model_backend === "mock") warnings.push("MOCK MODEL active (no live upstream LLM)");
+  if (state.counters.model_fallback_count > 0) {
+    warnings.push(`${state.counters.model_fallback_count} response(s) SILENTLY FELL BACK TO MOCK (Ollama call failed — see server log)`);
+  }
+  banner.innerHTML = warnings.length
+    ? `<div class="banner">${warnings.join(" &nbsp;·&nbsp; ")}</div>`
+    : "";
+
+  document.getElementById("c-requests").textContent = state.counters.requests;
+  document.getElementById("c-served").textContent = state.counters.real_clients_served;
+  document.getElementById("c-stopped").textContent = state.counters.attackers_stopped;
+  document.getElementById("c-traps").textContent =
+    state.counters.trap_matches === null ? "—" : `${state.counters.trap_matches}/${state.counters.trap_total}`;
+
+  const rows = document.getElementById("rows");
+  rows.innerHTML = "";
+  for (const r of state.recent_requests) {
+    const tr = document.createElement("tr");
+    const time = new Date(r.created_at * 1000).toLocaleTimeString();
+    const risk = r.risk_score === null || r.risk_score === undefined ? "—" : r.risk_score.toFixed(1);
+    const bars = SIGNAL_ORDER.map(sig => {
+      const v = r.risk_breakdown && r.risk_breakdown[sig] ? r.risk_breakdown[sig].value : 0;
+      return `<div class="bar" title="${sig}: ${v}"><span style="height:${Math.round(v * 100)}%"></span></div>`;
+    }).join("");
+    tr.innerHTML = `
+      <td>${time}</td>
+      <td>${r.tenant_id || "—"}</td>
+      <td>${r.label || "—"}${r.is_trap ? " 🪤" : ""}</td>
+      <td class="risk">${risk}</td>
+      <td><div class="bars">${bars}</div></td>
+      <td><span class="badge ${r.outcome}">${(r.outcome || "").replace("_", " ")}</span></td>
+      <td>${r.firewall_engine || "—"}</td>
+    `;
+    rows.appendChild(tr);
+  }
+}
+
+async function doAction(name) {
+  const buttons = document.querySelectorAll("button");
+  buttons.forEach(b => b.disabled = true);
+  const log = document.getElementById("log");
+  try {
+    const resp = await fetch(`/api/dashboard/action/${name}`, { method: "POST" });
+    const data = await resp.json();
+    if (name === "scan-suspect-model") {
+      renderScan(data);
+    } else if (name === "auto-play") {
+      log.style.display = "block";
+      log.textContent = "Auto-play finished:\n" + JSON.stringify(summarize(data), null, 2);
+      if (data.scan) renderScan(data.scan);
+    } else if (name === "attack-customer-b") {
+      log.style.display = "block";
+      const r = data.result;
+      log.textContent = r.status_code === 403
+        ? `Customer B attack BLOCKED (403): ${JSON.stringify(r.detail.detail || r.detail)}`
+        : `Customer B attack got through (status ${r.status_code}) — no bot has been confirmed yet, try "Send bot" a few more times first.`;
+    } else if (name === "reset") {
+      log.style.display = "none";
+      document.getElementById("scan-result").innerHTML = "";
+    }
+  } catch (e) {
+    log.style.display = "block";
+    log.textContent = "Error: " + e;
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+    fetchState();
+  }
+}
+
+function summarize(data) {
+  return {
+    clients_sent: data.clients ? data.clients.length : 0,
+    dev_ci_sent: data.dev_ci ? data.dev_ci.length : 0,
+    bot_requests_sent: data.bots ? data.bots.length : 0,
+    bots_reached_decoy: data.bots_reached_decoy,
+    hacker_requests_sent: data.hackers ? data.hackers.length : 0,
+    customer_b_attack_blocked: data.attack_customer_b ? data.attack_customer_b.status_code === 403 : null,
+    customer_b_legit_unaffected: data.customer_b_legit_unaffected ? data.customer_b_legit_unaffected.status_code === 200 : null,
+  };
+}
+
+function renderScan(scan) {
+  const el = document.getElementById("scan-result");
+  const clone = scan.clone, clean = scan.clean;
+  el.innerHTML = `
+    <strong>Model DNA verifier</strong><br>
+    Clone stand-in: <span>${clone.matches}/${clone.total} trap matches, p = ${clone.p_value !== null ? clone.p_value.toExponential(3) : "n/a"}</span><br>
+    Clean upstream: <span>${clean.matches}/${clean.total} trap matches, p = ${clean.p_value !== null ? clean.p_value.toExponential(3) : "n/a"}</span><br>
+    <small style="color:var(--muted)">${clone.caveat || ""}</small>
+  `;
+}
+
+fetchState();
+setInterval(fetchState, 3000);
+</script>
+</body>
+</html>
